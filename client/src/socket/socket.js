@@ -1,149 +1,187 @@
-// socket.js - Socket.io client setup
-
 import { io } from 'socket.io-client';
-import { useEffect, useState } from 'react';
 
-// Socket.io connection URL
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+class SocketService {
+  constructor() {
+    this.socket = null;
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 1000;
+    this.eventListeners = new Map();
+  }
 
-// Create socket instance
-export const socket = io(SOCKET_URL, {
-  autoConnect: false,
-  reconnection: true,
-  reconnectionAttempts: 5,
-  reconnectionDelay: 1000,
-});
-
-// Custom hook for using socket.io
-export const useSocket = () => {
-  const [isConnected, setIsConnected] = useState(socket.connected);
-  const [lastMessage, setLastMessage] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [typingUsers, setTypingUsers] = useState([]);
-
-  // Connect to socket server
-  const connect = (username) => {
-    socket.connect();
-    if (username) {
-      socket.emit('user_join', username);
+  connect(token) {
+    if (this.socket && this.isConnected) {
+      return this.socket;
     }
-  };
 
-  // Disconnect from socket server
-  const disconnect = () => {
-    socket.disconnect();
-  };
-
-  // Send a message
-  const sendMessage = (message) => {
-    socket.emit('send_message', { message });
-  };
-
-  // Send a private message
-  const sendPrivateMessage = (to, message) => {
-    socket.emit('private_message', { to, message });
-  };
-
-  // Set typing status
-  const setTyping = (isTyping) => {
-    socket.emit('typing', isTyping);
-  };
-
-  // Socket event listeners
-  useEffect(() => {
-    // Connection events
-    const onConnect = () => {
-      setIsConnected(true);
-    };
-
-    const onDisconnect = () => {
-      setIsConnected(false);
-    };
-
-    // Message events
-    const onReceiveMessage = (message) => {
-      setLastMessage(message);
-      setMessages((prev) => [...prev, message]);
-    };
-
-    const onPrivateMessage = (message) => {
-      setLastMessage(message);
-      setMessages((prev) => [...prev, message]);
-    };
-
-    // User events
-    const onUserList = (userList) => {
-      setUsers(userList);
-    };
-
-    const onUserJoined = (user) => {
-      // You could add a system message here
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          system: true,
-          message: `${user.username} joined the chat`,
-          timestamp: new Date().toISOString(),
+    try {
+      this.socket = io('http://localhost:5000', {
+        auth: {
+          token: token
         },
-      ]);
-    };
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: this.maxReconnectAttempts,
+        reconnectionDelay: this.reconnectDelay,
+        timeout: 20000
+      });
 
-    const onUserLeft = (user) => {
-      // You could add a system message here
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          system: true,
-          message: `${user.username} left the chat`,
-          timestamp: new Date().toISOString(),
-        },
-      ]);
-    };
+      this.setupEventListeners();
+      return this.socket;
+    } catch (error) {
+      console.error('Socket connection error:', error);
+      throw error;
+    }
+  }
 
-    // Typing events
-    const onTypingUsers = (users) => {
-      setTypingUsers(users);
-    };
+  setupEventListeners() {
+    if (!this.socket) return;
 
-    // Register event listeners
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    socket.on('receive_message', onReceiveMessage);
-    socket.on('private_message', onPrivateMessage);
-    socket.on('user_list', onUserList);
-    socket.on('user_joined', onUserJoined);
-    socket.on('user_left', onUserLeft);
-    socket.on('typing_users', onTypingUsers);
+    this.socket.on('connect', () => {
+      console.log('🔌 Connected to server');
+      this.isConnected = true;
+      this.reconnectAttempts = 0;
+      this.emit('socket:connected');
+    });
 
-    // Clean up event listeners
-    return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('receive_message', onReceiveMessage);
-      socket.off('private_message', onPrivateMessage);
-      socket.off('user_list', onUserList);
-      socket.off('user_joined', onUserJoined);
-      socket.off('user_left', onUserLeft);
-      socket.off('typing_users', onTypingUsers);
-    };
-  }, []);
+    this.socket.on('disconnect', (reason) => {
+      console.log('🔌 Disconnected from server:', reason);
+      this.isConnected = false;
+      this.emit('socket:disconnected', reason);
+    });
 
-  return {
-    socket,
-    isConnected,
-    lastMessage,
-    messages,
-    users,
-    typingUsers,
-    connect,
-    disconnect,
-    sendMessage,
-    sendPrivateMessage,
-    setTyping,
-  };
-};
+    this.socket.on('connect_error', (error) => {
+      console.error('🔌 Connection error:', error);
+      this.isConnected = false;
+      this.emit('socket:error', error);
+    });
 
-export default socket; 
+    this.socket.on('reconnect', (attemptNumber) => {
+      console.log('🔌 Reconnected to server after', attemptNumber, 'attempts');
+      this.isConnected = true;
+      this.emit('socket:reconnected');
+    });
+
+    this.socket.on('reconnect_error', (error) => {
+      console.error('🔌 Reconnection error:', error);
+      this.emit('socket:reconnect_error', error);
+    });
+
+    this.socket.on('reconnect_failed', () => {
+      console.error('🔌 Reconnection failed');
+      this.emit('socket:reconnect_failed');
+    });
+  }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+      this.isConnected = false;
+    }
+  }
+
+  emit(event, data) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit(event, data);
+    } else {
+      console.warn('Socket not connected, cannot emit:', event);
+    }
+  }
+
+  on(event, callback) {
+    if (!this.eventListeners.has(event)) {
+      this.eventListeners.set(event, []);
+    }
+    this.eventListeners.get(event).push(callback);
+
+    if (this.socket) {
+      this.socket.on(event, callback);
+    }
+  }
+
+  off(event, callback) {
+    if (this.eventListeners.has(event)) {
+      const listeners = this.eventListeners.get(event);
+      const index = listeners.indexOf(callback);
+      if (index > -1) {
+        listeners.splice(index, 1);
+      }
+    }
+
+    if (this.socket) {
+      this.socket.off(event, callback);
+    }
+  }
+
+  // Chat-specific methods
+  joinRoom(roomId) {
+    this.emit('room:join', { roomId });
+  }
+
+  leaveRoom(roomId) {
+    this.emit('room:leave', { roomId });
+  }
+
+  sendMessage(roomId, content, type = 'text', fileData = null) {
+    this.emit('message:send', { roomId, content, type, fileData });
+  }
+
+  startTyping(roomId) {
+    this.emit('typing:start', { roomId });
+  }
+
+  stopTyping(roomId) {
+    this.emit('typing:stop', { roomId });
+  }
+
+  editMessage(messageId, newContent) {
+    this.emit('message:edit', { messageId, newContent });
+  }
+
+  deleteMessage(messageId) {
+    this.emit('message:delete', { messageId });
+  }
+
+  markMessageAsRead(messageId, roomId) {
+    this.emit('message:read', { messageId, roomId });
+  }
+
+  createRoom(name, isPrivate = false, members = []) {
+    this.emit('room:create', { name, isPrivate, members });
+  }
+
+  sendPrivateMessage(recipientId, content, type = 'text', fileData = null) {
+    this.emit('message:private', { recipientId, content, type, fileData });
+  }
+
+  shareFile(roomId, fileData, fileName, fileType, fileSize) {
+    this.emit('file:share', { roomId, fileData, fileName, fileType, fileSize });
+  }
+
+  updateUserStatus(status) {
+    this.emit('user:status', { status });
+  }
+
+  searchRooms(query) {
+    this.emit('room:search', { query });
+  }
+
+  searchMessages(roomId, query) {
+    this.emit('message:search', { roomId, query });
+  }
+
+  // Utility methods
+  isConnected() {
+    return this.isConnected;
+  }
+
+  getSocketId() {
+    return this.socket ? this.socket.id : null;
+  }
+}
+
+// Export singleton instance
+const socketService = new SocketService();
+export default socketService; 

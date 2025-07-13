@@ -1,0 +1,14 @@
+{
+  "name": "week5-websocket-app",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter client dev\" \"pnpm --filter server dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.0.0"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ]
+}
